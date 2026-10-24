@@ -1,0 +1,7 @@
+.gva-btn{display:inline-flex;align-items:center;gap:6px;height:36px;padding:0 14px;margin-inline-start:8px;border:0;border-radius:18px;background:#e9eef6;color:#1f1f1f;font:500 14px "Google Sans",Roboto,Arial,sans-serif;cursor:pointer;vertical-align:middle;white-space:nowrap}
+.gva-btn:hover{background:#dde3ea}
+.gva-btn::before{content:"";width:18px;height:18px;background:currentColor;-webkit-mask:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cpath d='M12 14a3 3 0 0 0 3-3V5a3 3 0 0 0-6 0v6a3 3 0 0 0 3 3zm5-3a5 5 0 0 1-10 0H5a7 7 0 0 0 6 6.92V21h2v-3.08A7 7 0 0 0 19 11h-2z'/%3E%3C/svg%3E") center/contain no-repeat}
+.gva-btn.rec{background:#fce8e6;color:#b3261e}
+.gva-btn.rec::before{animation:gva-pulse 1s infinite}
+.gva-btn:disabled{opacity:.6;cursor:default}
+@keyframes gva-pulse{50%{opacity:.3}}

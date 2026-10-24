@@ -1,0 +1,12 @@
+{
+  "manifest_version": 3,
+  "name": "Gmail הקלטה מצורפת",
+  "version": "1.0.0",
+  "description": "כפתור מיקרופון בחלון כתיבת אימייל ב-Gmail: מקליטים, וההקלטה מצורפת לאימייל.",
+  "content_scripts": [{
+    "matches": ["https://mail.google.com/*"],
+    "js": ["vendor/lame.min.js", "content.js"],
+    "css": ["voice.css"],
+    "run_at": "document_idle"
+  }]
+}
