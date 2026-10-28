@@ -66,6 +66,30 @@
       body.dispatchEvent(new DragEvent(type, { bubbles: true, cancelable: true, dataTransfer: dt })));
   }
 
+  // Put an image inside the message body the way a pasted screenshot goes in: Gmail's own
+  // paste handler uploads it and places it at the caret. If Gmail ignores the synthetic
+  // paste, the image is attached as a plain file instead.
+  function insertInline(root, file, range) {
+    const body = root.querySelector('div[contenteditable="true"][role="textbox"]');
+    if (body) {
+      body.focus();
+      const sel = getSelection();
+      if (range && body.contains(range.commonAncestorContainer)) {
+        sel.removeAllRanges();
+        sel.addRange(range);
+      } else if (!body.contains(sel.anchorNode)) {
+        sel.selectAllChildren(body);
+        sel.collapseToEnd();
+      }
+      const dt = new DataTransfer();
+      dt.items.add(file);
+      const ev = new ClipboardEvent('paste', { bubbles: true, cancelable: true, clipboardData: dt });
+      body.dispatchEvent(ev);
+      if (ev.defaultPrevented) return;
+    }
+    attach(root, file);
+  }
+
   const stamp = () => new Date().toISOString().slice(0, 16).replace('T', '_').replace(':', '-');
 
   // Minimal ZIP writer (STORE, no compression: PNG and WebM are already compressed).
@@ -160,6 +184,9 @@
   }
 
   async function takeScreenshot(btn) {
+    // Remember where the caret was, so the image lands there and not at the end.
+    const sel = getSelection();
+    const range = sel.rangeCount ? sel.getRangeAt(0).cloneRange() : null;
     let stream;
     try {
       stream = await navigator.mediaDevices.getDisplayMedia({ video: true, audio: false, selfBrowserSurface: 'include' });
@@ -183,7 +210,9 @@
       out.getContext('2d').drawImage(frame, r.x, r.y, r.w, r.h, 0, 0, out.width, out.height);
       const png = await new Promise(res => out.toBlob(res, 'image/png'));
       const s = stamp();
-      await attachZipped(btn, new File([png], `צילום-מסך_${s}.png`, { type: 'image/png' }), `צילום-מסך_${s}.zip`);
+      const root = composeRoot(btn);
+      if (!root) throw new Error('no compose root');
+      insertInline(root, new File([png], `צילום-מסך_${s}.png`, { type: 'image/png' }), range);
     } catch {
       alert('לא הצלחתי לצרף את צילום המסך לאימייל.');
     } finally {
@@ -206,9 +235,10 @@
       cell.append(b);
       return b;
     };
-    const shotBtn = make('gva-shot', 'גזירת מסך – צרף כ-ZIP');
+    const shotBtn = make('gva-shot', 'גזירת מסך – הוסף לגוף האימייל');
     const vidBtn = make('gva-vid', 'הקלטת וידאו של המסך – צרף כ-ZIP');
 
+    shotBtn.addEventListener('mousedown', e => e.preventDefault()); // keep the caret in the body
     shotBtn.addEventListener('click', e => {
       e.preventDefault();
       e.stopPropagation();
