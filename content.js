@@ -50,6 +50,17 @@
     return null;
   }
 
+  // The message body of the compose window holding el. Gmail marks it g_editable; the other
+  // selectors are fallbacks in case that changes.
+  const BODY_SEL = '[g_editable="true"], div.editable[contenteditable="true"], div[contenteditable="true"][role="textbox"]';
+  function composeBody(el) {
+    for (let n = el; n && n !== document.body; n = n.parentElement) {
+      const b = n.querySelector(BODY_SEL);
+      if (b) return b;
+    }
+    return null;
+  }
+
   // Attach through Gmail's own file input; fall back to a synthetic drop on the message body.
   function attach(root, file) {
     const dt = new DataTransfer();
@@ -60,34 +71,10 @@
       input.dispatchEvent(new Event('change', { bubbles: true }));
       return;
     }
-    const body = root.querySelector('div[contenteditable="true"][role="textbox"]');
+    const body = composeBody(root);
     if (!body) throw new Error('no compose body');
     ['dragenter', 'dragover', 'drop'].forEach(type =>
       body.dispatchEvent(new DragEvent(type, { bubbles: true, cancelable: true, dataTransfer: dt })));
-  }
-
-  // Put an image inside the message body the way a pasted screenshot goes in: Gmail's own
-  // paste handler uploads it and places it at the caret. If Gmail ignores the synthetic
-  // paste, the image is attached as a plain file instead.
-  function insertInline(root, file, range) {
-    const body = root.querySelector('div[contenteditable="true"][role="textbox"]');
-    if (body) {
-      body.focus();
-      const sel = getSelection();
-      if (range && body.contains(range.commonAncestorContainer)) {
-        sel.removeAllRanges();
-        sel.addRange(range);
-      } else if (!body.contains(sel.anchorNode)) {
-        sel.selectAllChildren(body);
-        sel.collapseToEnd();
-      }
-      const dt = new DataTransfer();
-      dt.items.add(file);
-      const ev = new ClipboardEvent('paste', { bubbles: true, cancelable: true, clipboardData: dt });
-      body.dispatchEvent(ev);
-      if (ev.defaultPrevented) return;
-    }
-    attach(root, file);
   }
 
   const stamp = () => new Date().toISOString().slice(0, 16).replace('T', '_').replace(':', '-');
@@ -136,88 +123,68 @@
     attach(root, new File([await makeZip([file])], zipName, { type: 'application/zip' }));
   }
 
-  // Screenshot: the user picks a screen, window or tab, then drags a region on a frozen frame.
-  // Enter or a click without dragging takes the whole frame; Esc cancels.
-  function pickRegion(canvas) {
-    return new Promise(resolve => {
-      const overlay = document.createElement('div');
-      overlay.className = 'gva-crop';
-      const hint = document.createElement('div');
-      hint.className = 'gva-crop-hint';
-      hint.textContent = 'גרור לבחירת אזור · Enter או לחיצה = כל המסך · Esc = ביטול';
-      const box = document.createElement('div');
-      box.className = 'gva-crop-box';
-      canvas.className = 'gva-crop-img';
-      overlay.append(canvas, box, hint);
-      document.body.append(overlay);
-
-      let start = null, rect = null;
-      const done = result => {
-        document.removeEventListener('keydown', onKey, true);
-        overlay.remove();
-        resolve(result);
-      };
-      // Converts a selection in screen pixels to canvas pixels.
-      const toCanvas = r => {
-        const b = canvas.getBoundingClientRect(), sx = canvas.width / b.width, sy = canvas.height / b.height;
-        const x = Math.max(0, (r.x - b.left) * sx), y = Math.max(0, (r.y - b.top) * sy);
-        return { x, y, w: Math.min(canvas.width - x, r.w * sx), h: Math.min(canvas.height - y, r.h * sy) };
-      };
-      const onKey = e => {
-        if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); done(null); }
-        if (e.key === 'Enter') { e.preventDefault(); e.stopPropagation(); done({ x: 0, y: 0, w: canvas.width, h: canvas.height }); }
-      };
-      document.addEventListener('keydown', onKey, true);
-      overlay.addEventListener('mousedown', e => { start = { x: e.clientX, y: e.clientY }; rect = null; });
-      overlay.addEventListener('mousemove', e => {
-        if (!start) return;
-        rect = { x: Math.min(start.x, e.clientX), y: Math.min(start.y, e.clientY),
-                 w: Math.abs(e.clientX - start.x), h: Math.abs(e.clientY - start.y) };
-        Object.assign(box.style, { display: 'block', left: rect.x + 'px', top: rect.y + 'px', width: rect.w + 'px', height: rect.h + 'px' });
-      });
-      overlay.addEventListener('mouseup', () => {
-        start = null;
-        const c = rect && rect.w > 5 && rect.h > 5 ? toCanvas(rect) : null;
-        done(c && c.w > 1 && c.h > 1 ? c : { x: 0, y: 0, w: canvas.width, h: canvas.height });
-      });
-    });
-  }
-
-  async function takeScreenshot(btn) {
-    // Remember where the caret was, so the image lands there and not at the end.
+  // Screenshot: hands off to the Windows snipping overlay (the same one as Win+Shift+S), which puts
+  // the snip on the clipboard. When the user comes back to Chrome, the caret is put back in the body
+  // and the clipboard is pasted there - Gmail only inlines an image from a trusted paste, and
+  // execCommand('paste') is one when the extension holds clipboardRead. The clipboard is emptied
+  // first, so a cancelled snip pastes nothing instead of whatever was copied before.
+  function takeScreenshot(btn) {
+    const body = composeBody(btn);
     const sel = getSelection();
-    const range = sel.rangeCount ? sel.getRangeAt(0).cloneRange() : null;
-    let stream;
-    try {
-      stream = await navigator.mediaDevices.getDisplayMedia({ video: true, audio: false, selfBrowserSurface: 'include' });
-    } catch { return; } // the user cancelled the picker
-    const video = document.createElement('video');
-    video.srcObject = stream;
-    video.muted = true;
-    try {
-      await video.play();
-      await new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)));
-      const frame = document.createElement('canvas');
-      frame.width = video.videoWidth;
-      frame.height = video.videoHeight;
-      frame.getContext('2d').drawImage(video, 0, 0);
-      stream.getTracks().forEach(t => t.stop());
-      const r = await pickRegion(frame);
-      if (!r) return;
-      const out = document.createElement('canvas');
-      out.width = Math.round(r.w);
-      out.height = Math.round(r.h);
-      out.getContext('2d').drawImage(frame, r.x, r.y, r.w, r.h, 0, 0, out.width, out.height);
-      const png = await new Promise(res => out.toBlob(res, 'image/png'));
-      const s = stamp();
-      const root = composeRoot(btn);
-      if (!root) throw new Error('no compose root');
-      insertInline(root, new File([png], `צילום-מסך_${s}.png`, { type: 'image/png' }), range);
-    } catch {
-      alert('לא הצלחתי לצרף את צילום המסך לאימייל.');
-    } finally {
-      stream.getTracks().forEach(t => t.stop());
+    const saved = sel.rangeCount ? sel.getRangeAt(0).cloneRange() : null;
+    const range = saved && body && body.contains(saved.commonAncestorContainer) ? saved : null;
+    navigator.clipboard.writeText('').catch(() => {});
+    const a = document.createElement('a');
+    a.href = 'ms-screenclip:';
+    a.click();
+
+    const toast = document.createElement('div');
+    toast.className = 'gva-toast';
+    toast.textContent = 'גזור את האזור הרצוי – הוא ייכנס לאימייל';
+    document.body.append(toast);
+    if (!body) {
+      toast.textContent = 'אחרי הגזירה לחץ בגוף האימייל ואז Ctrl+V';
+      setTimeout(() => toast.remove(), 30000);
+      return;
     }
+
+    // Polls focus instead of relying on blur/focus events, which do not always fire around the
+    // snipping overlay.
+    let away = false, auto = false, done = false;
+    const watch = setInterval(() => {
+      if (!document.hasFocus()) away = true;
+      else if (away) { away = false; setTimeout(paste, 150); }
+    }, 250);
+    const finish = () => {
+      done = true;
+      clearInterval(watch);
+      toast.remove();
+      body.removeEventListener('paste', onUserPaste, true);
+    };
+    const onUserPaste = () => { if (!auto) setTimeout(finish, 500); };
+    async function paste() {
+      if (done) return;
+      body.focus();
+      if (range) {
+        sel.removeAllRanges();
+        sel.addRange(range);
+      }
+      const before = body.querySelectorAll('img').length;
+      auto = true;
+      const ok = document.execCommand('paste');
+      auto = false;
+      if (!ok) {
+        toast.textContent = 'לחץ Ctrl+V כדי להכניס את הגזירה לאימייל';
+        return;
+      }
+      for (let n = 0; n < 50 && !done; n++) {
+        if (body.querySelectorAll('img').length > before) return finish();
+        await new Promise(r => setTimeout(r, 100));
+      }
+      if (!done) toast.textContent = `לחץ Ctrl+V כדי להכניס את הגזירה לאימייל`;
+    }
+    body.addEventListener('paste', onUserPaste, true);
+    setTimeout(() => done || finish(), 120000);
   }
 
   // Screen video: screen/window/tab plus its audio when shared, mixed with the microphone.
@@ -235,7 +202,7 @@
       cell.append(b);
       return b;
     };
-    const shotBtn = make('gva-shot', 'גזירת מסך – הוסף לגוף האימייל');
+    const shotBtn = make('gva-shot', 'גזירת מסך לתוך גוף האימייל');
     const vidBtn = make('gva-vid', 'הקלטת וידאו של המסך – צרף כ-ZIP');
 
     shotBtn.addEventListener('mousedown', e => e.preventDefault()); // keep the caret in the body
